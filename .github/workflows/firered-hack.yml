@@ -31,7 +31,7 @@ jobs:
           assert old in s, "battle.h mudou"
           open(p,'w').write(s.replace(old,"#define B_FLAG_DYNAMAX_BATTLE       0x020 ",1))
           PY
-          git diff --stat
+          
 
       - name: Compilar
         run: make firered -j$(nproc)
