@@ -1,0 +1,43 @@
+name: Compilar FireRed Hack
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm
+    steps:
+      - name: Instalar ferramentas
+        run: |
+          apt-get update
+          apt-get install -y git build-essential libpng-dev python3 binutils-arm-none-eabi
+
+      - name: Baixar o projeto
+        uses: actions/checkout@v4
+
+      - name: Aplicar Mega, Z-Move e Dynamax
+        run: |
+          python3 - <<'PY'
+          p='src/new_game.c'
+          s=open(p).read()
+          old="    ResetItemFlags();\n    ResetDexNav();"
+          new=old+"\n    AddBagItem(ITEM_MEGA_RING, 1);\n    AddBagItem(ITEM_Z_POWER_RING, 1);\n    AddBagItem(ITEM_DYNAMAX_BAND, 1);\n    FlagSet(B_FLAG_DYNAMAX_BATTLE);"
+          assert old in s, "new_game.c mudou"
+          open(p,'w').write(s.replace(old,new,1))
+          p='include/config/battle.h'
+          s=open(p).read()
+          old="#define B_FLAG_DYNAMAX_BATTLE       0 "
+          assert old in s, "battle.h mudou"
+          open(p,'w').write(s.replace(old,"#define B_FLAG_DYNAMAX_BATTLE       0x020 ",1))
+          PY
+          git diff --stat
+
+      - name: Compilar
+        run: make firered -j$(nproc)
+
+      - name: Guardar o jogo
+        uses: actions/upload-artifact@v4
+        with:
+          name: pokefirered-hack
+          path: "*.gba"
