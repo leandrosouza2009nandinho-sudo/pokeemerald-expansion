@@ -359,7 +359,7 @@ jobs:
           +
            #include "data/pokemon/species_info.h"
            
-           #define PP_UPDATE_PLACEHOLDER
+           #define PP_UP_SHIFTS(val) val, (val) << 2, (val) << 4, (val) << 6
           EOF_PATCH
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git apply --verbose --ignore-whitespace adapt.patch
