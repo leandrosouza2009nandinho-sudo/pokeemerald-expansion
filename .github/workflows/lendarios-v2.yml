@@ -1,0 +1,239 @@
+name: Compilar Lendarios e HM Livre v2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm
+    steps:
+      - name: Instalar ferramentas
+        run: |
+          apt-get update
+          apt-get install -y git build-essential libpng-dev python3 binutils-arm-none-eabi
+
+      - name: Baixar o projeto
+        uses: actions/checkout@v4
+
+      - name: Aplicar lendarios e HM livre
+        run: |
+          cat > lend.patch <<'EOF_PATCH'
+          diff --git a/include/field_move.h b/include/field_move.h
+          index d73867ce..a1d4e331 100644
+          --- a/include/field_move.h
+          +++ b/include/field_move.h
+          @@ -57,6 +57,24 @@ static inline u32 FieldMove_GetPartyMsgID(enum FieldMove fieldMove)
+               return gFieldMoveInfo[fieldMove].partyMsgID;
+           }
+           
+          +static inline bool32 IsFreeHmFieldMove(enum FieldMove fieldMove)
+          +{
+          +    switch (fieldMove)
+          +    {
+          +    case FIELD_MOVE_CUT:
+          +    case FIELD_MOVE_FLASH:
+          +    case FIELD_MOVE_ROCK_SMASH:
+          +    case FIELD_MOVE_STRENGTH:
+          +    case FIELD_MOVE_SURF:
+          +    case FIELD_MOVE_FLY:
+          +    case FIELD_MOVE_DIVE:
+          +    case FIELD_MOVE_WATERFALL:
+          +        return TRUE;
+          +    default:
+          +        return FALSE;
+          +    }
+          +}
+          +
+           static inline bool32 FieldMove_IsVisible(enum FieldMove fieldMove)
+           {
+               return !gFieldMoveInfo[fieldMove].hideIfLocked || IsFieldMoveUnlocked(fieldMove);
+          diff --git a/src/field_player_avatar.c b/src/field_player_avatar.c
+          index 9eec5ebb..e4d21045 100644
+          --- a/src/field_player_avatar.c
+          +++ b/src/field_player_avatar.c
+          @@ -1624,8 +1624,8 @@ bool8 PartyHasMonWithSurf(void)
+                   {
+                       if (GetMonData(&gParties[B_TRAINER_PLAYER][i], MON_DATA_SPECIES) == SPECIES_NONE)
+                           break;
+          -            if (MonKnowsMove(&gParties[B_TRAINER_PLAYER][i], MOVE_SURF))
+          -                return TRUE;
+          +            if (!GetMonData(&gParties[B_TRAINER_PLAYER][i], MON_DATA_IS_EGG))
+          +                return TRUE; // HM livre: qualquer Pokemon pode usar Surf (insignia checada fora)
+                   }
+               }
+               return FALSE;
+          diff --git a/src/party_menu.c b/src/party_menu.c
+          index bfb6ef98..d1749e4f 100644
+          --- a/src/party_menu.c
+          +++ b/src/party_menu.c
+          @@ -185,7 +185,7 @@ struct PartyMenuInternal
+               u32 spriteIdCancelPokeball:7;
+               u32 messageId:14;
+               u8 windowId[3];
+          -    u8 actions[8];
+          +    u8 actions[12];
+               u8 numActions;
+               // In vanilla Emerald, only the first 0xB0 hwords (0x160 bytes) are actually used.
+               // However, a full 0x100 hwords (0x200 bytes) are allocated.
+          @@ -2970,6 +2970,25 @@ static void SetPartyMonFieldSelectionActions(struct Pokemon *mons, u8 slotId)
+                   }
+               }
+           
+          +    // HM livre: Fly, Flash e Surf aparecem para qualquer Pokemon (se tiver a insignia)
+          +    if (!GetMonData(&mons[slotId], MON_DATA_IS_EGG))
+          +    {
+          +        static const u8 sFreeMenuMoves[] = { FIELD_MOVE_FLY, FIELD_MOVE_FLASH, FIELD_MOVE_SURF };
+          +        for (j = 0; j < ARRAY_COUNT(sFreeMenuMoves); j++)
+          +        {
+          +            bool8 already = FALSE;
+          +            if (!FieldMove_IsVisible(sFreeMenuMoves[j]) || !IsFieldMoveUnlocked(sFreeMenuMoves[j]))
+          +                continue;
+          +            for (i = 0; i < sPartyMenuInternal->numActions; i++)
+          +            {
+          +                if (sPartyMenuInternal->actions[i] == sFreeMenuMoves[j] + MENU_FIELD_MOVES)
+          +                    already = TRUE;
+          +            }
+          +            if (!already)
+          +                AppendToList(sPartyMenuInternal->actions, &sPartyMenuInternal->numActions, sFreeMenuMoves[j] + MENU_FIELD_MOVES);
+          +        }
+          +    }
+          +
+               if (!InBattlePike())
+               {
+                   if (GetMonData(&mons[1], MON_DATA_SPECIES) != SPECIES_NONE)
+          diff --git a/src/scrcmd.c b/src/scrcmd.c
+          index cd797fbf..d28f0a5a 100644
+          --- a/src/scrcmd.c
+          +++ b/src/scrcmd.c
+          @@ -2304,6 +2304,22 @@ bool8 ScrCmd_checkfieldmove(struct ScriptContext *ctx)
+                   return FALSE;
+           
+               move = FieldMove_GetMoveId(fieldMove);
+          +    if (IsFreeHmFieldMove(fieldMove) && IsFieldMoveUnlocked(fieldMove))
+          +    {
+          +        // HM livre: usa o primeiro Pokemon (nao ovo) do time, mas exige a insignia
+          +        for (u32 k = 0; k < PARTY_SIZE; k++)
+          +        {
+          +            enum Species sp = GetMonData(&gParties[B_TRAINER_PLAYER][k], MON_DATA_SPECIES);
+          +            if (!sp)
+          +                break;
+          +            if (!GetMonData(&gParties[B_TRAINER_PLAYER][k], MON_DATA_IS_EGG))
+          +            {
+          +                gSpecialVar_Result = k;
+          +                gSpecialVar_0x8004 = sp;
+          +                return FALSE;
+          +            }
+          +        }
+          +    }
+               for (u32 i = 0; i < PARTY_SIZE; i++)
+               {
+                   enum Species species = GetMonData(&gParties[B_TRAINER_PLAYER][i], MON_DATA_SPECIES);
+          diff --git a/src/wild_encounter.c b/src/wild_encounter.c
+          index dd6a0c88..56aa118b 100644
+          --- a/src/wild_encounter.c
+          +++ b/src/wild_encounter.c
+          @@ -662,6 +662,78 @@ bool8 AreLegendariesInSootopolisPreventingEncounters(void)
+               return FlagGet(FLAG_LEGENDARIES_IN_SOOTOPOLIS);
+           }
+           
+          +// ---- Lendarios selvagens (Hack 3) ----
+          +#define LEGENDARY_WILD_LEVEL  80
+          +#define LEGENDARY_WILD_CHANCE 5 // % por lendario da area
+          +
+          +struct LegendaryArea
+          +{
+          +    u8 mapGroup;
+          +    u8 mapNum;
+          +    u8 count;
+          +    enum Species species[3];
+          +};
+          +
+          +static const struct LegendaryArea sLegendaryAreas[] =
+          +{
+          +    { MAP_GROUP(MAP_CERULEAN_CAVE_1F), MAP_NUM(MAP_CERULEAN_CAVE_1F), 3, { SPECIES_MEWTWO, SPECIES_MEW, SPECIES_DEOXYS_NORMAL } },
+          +    { MAP_GROUP(MAP_CERULEAN_CAVE_2F), MAP_NUM(MAP_CERULEAN_CAVE_2F), 3, { SPECIES_DARKRAI, SPECIES_GIRATINA_ALTERED, SPECIES_NECROZMA } },
+          +    { MAP_GROUP(MAP_CERULEAN_CAVE_B1F), MAP_NUM(MAP_CERULEAN_CAVE_B1F), 3, { SPECIES_ARCEUS, SPECIES_DIALGA, SPECIES_PALKIA } },
+          +    { MAP_GROUP(MAP_POWER_PLANT), MAP_NUM(MAP_POWER_PLANT), 3, { SPECIES_ZAPDOS, SPECIES_RAIKOU, SPECIES_THUNDURUS_INCARNATE } },
+          +    { MAP_GROUP(MAP_ROUTE10), MAP_NUM(MAP_ROUTE10), 3, { SPECIES_REGIELEKI, SPECIES_ZERAORA, SPECIES_TAPU_KOKO } },
+          +    { MAP_GROUP(MAP_SEAFOAM_ISLANDS_B1F), MAP_NUM(MAP_SEAFOAM_ISLANDS_B1F), 3, { SPECIES_ARTICUNO, SPECIES_SUICUNE, SPECIES_KYOGRE } },
+          +    { MAP_GROUP(MAP_SEAFOAM_ISLANDS_B4F), MAP_NUM(MAP_SEAFOAM_ISLANDS_B4F), 3, { SPECIES_LUGIA, SPECIES_MANAPHY, SPECIES_PHIONE } },
+          +    { MAP_GROUP(MAP_SEAFOAM_ISLANDS_1F), MAP_NUM(MAP_SEAFOAM_ISLANDS_1F), 3, { SPECIES_KYUREM, SPECIES_GLASTRIER, SPECIES_CALYREX } },
+          +    { MAP_GROUP(MAP_MT_EMBER_EXTERIOR), MAP_NUM(MAP_MT_EMBER_EXTERIOR), 3, { SPECIES_MOLTRES, SPECIES_ENTEI, SPECIES_GROUDON } },
+          +    { MAP_GROUP(MAP_MT_EMBER_SUMMIT_PATH_1F), MAP_NUM(MAP_MT_EMBER_SUMMIT_PATH_1F), 3, { SPECIES_HEATRAN, SPECIES_RESHIRAM, SPECIES_VOLCANION } },
+          +    { MAP_GROUP(MAP_MT_EMBER_RUBY_PATH_B1F), MAP_NUM(MAP_MT_EMBER_RUBY_PATH_B1F), 3, { SPECIES_VICTINI, SPECIES_CHI_YU, SPECIES_KORAIDON } },
+          +    { MAP_GROUP(MAP_VICTORY_ROAD_2F), MAP_NUM(MAP_VICTORY_ROAD_2F), 3, { SPECIES_RAYQUAZA, SPECIES_ZEKROM, SPECIES_LANDORUS_INCARNATE } },
+          +    { MAP_GROUP(MAP_VICTORY_ROAD_3F), MAP_NUM(MAP_VICTORY_ROAD_3F), 3, { SPECIES_ZACIAN_HERO, SPECIES_ZAMAZENTA_HERO, SPECIES_ETERNATUS } },
+          +    { MAP_GROUP(MAP_MT_MOON_1F), MAP_NUM(MAP_MT_MOON_1F), 3, { SPECIES_JIRACHI, SPECIES_COSMOG, SPECIES_CRESSELIA } },
+          +    { MAP_GROUP(MAP_MT_MOON_B1F), MAP_NUM(MAP_MT_MOON_B1F), 3, { SPECIES_SOLGALEO, SPECIES_COSMOEM, SPECIES_MAGEARNA } },
+          +    { MAP_GROUP(MAP_MT_MOON_B2F), MAP_NUM(MAP_MT_MOON_B2F), 2, { SPECIES_LUNALA, SPECIES_TAPU_LELE, SPECIES_NONE } },
+          +    { MAP_GROUP(MAP_VIRIDIAN_FOREST), MAP_NUM(MAP_VIRIDIAN_FOREST), 3, { SPECIES_CELEBI, SPECIES_SHAYMIN_LAND, SPECIES_ZARUDE } },
+          +    { MAP_GROUP(MAP_ROCK_TUNNEL_1F), MAP_NUM(MAP_ROCK_TUNNEL_1F), 3, { SPECIES_REGIROCK, SPECIES_REGISTEEL, SPECIES_REGIGIGAS } },
+          +    { MAP_GROUP(MAP_ROCK_TUNNEL_B1F), MAP_NUM(MAP_ROCK_TUNNEL_B1F), 3, { SPECIES_REGICE, SPECIES_REGIDRAGO, SPECIES_TING_LU } },
+          +    { MAP_GROUP(MAP_POKEMON_TOWER_3F), MAP_NUM(MAP_POKEMON_TOWER_3F), 3, { SPECIES_MARSHADOW, SPECIES_SPECTRIER, SPECIES_OKIDOGI } },
+          +    { MAP_GROUP(MAP_POKEMON_TOWER_5F), MAP_NUM(MAP_POKEMON_TOWER_5F), 2, { SPECIES_MUNKIDORI, SPECIES_FEZANDIPITI, SPECIES_NONE } },
+          +    { MAP_GROUP(MAP_POKEMON_MANSION_1F), MAP_NUM(MAP_POKEMON_MANSION_1F), 3, { SPECIES_GENESECT, SPECIES_MELTAN, SPECIES_TYPE_NULL } },
+          +    { MAP_GROUP(MAP_POKEMON_MANSION_B1F), MAP_NUM(MAP_POKEMON_MANSION_B1F), 3, { SPECIES_MIRAIDON, SPECIES_PECHARUNT, SPECIES_WO_CHIEN } },
+          +    { MAP_GROUP(MAP_DIGLETTS_CAVE_B1F), MAP_NUM(MAP_DIGLETTS_CAVE_B1F), 3, { SPECIES_TERRAKION, SPECIES_CHIEN_PAO, SPECIES_TAPU_BULU } },
+          +    { MAP_GROUP(MAP_SAFARI_ZONE_CENTER), MAP_NUM(MAP_SAFARI_ZONE_CENTER), 3, { SPECIES_COBALION, SPECIES_VIRIZION, SPECIES_KELDEO_ORDINARY } },
+          +    { MAP_GROUP(MAP_SAFARI_ZONE_EAST), MAP_NUM(MAP_SAFARI_ZONE_EAST), 3, { SPECIES_MELOETTA_ARIA, SPECIES_HOOPA_CONFINED, SPECIES_DIANCIE } },
+          +    { MAP_GROUP(MAP_ROUTE22), MAP_NUM(MAP_ROUTE22), 3, { SPECIES_LATIAS, SPECIES_LATIOS, SPECIES_TORNADUS_INCARNATE } },
+          +    { MAP_GROUP(MAP_ROUTE23), MAP_NUM(MAP_ROUTE23), 3, { SPECIES_XERNEAS_NEUTRAL, SPECIES_YVELTAL, SPECIES_ZYGARDE_50 } },
+          +    { MAP_GROUP(MAP_ROUTE24), MAP_NUM(MAP_ROUTE24), 3, { SPECIES_UXIE, SPECIES_MESPRIT, SPECIES_AZELF } },
+          +    { MAP_GROUP(MAP_ROUTE25), MAP_NUM(MAP_ROUTE25), 3, { SPECIES_TAPU_FINI, SPECIES_ENAMORUS_INCARNATE, SPECIES_KUBFU } },
+          +    { MAP_GROUP(MAP_ROUTE2), MAP_NUM(MAP_ROUTE2), 1, { SPECIES_TERAPAGOS_NORMAL, SPECIES_NONE, SPECIES_NONE } },
+          +};
+          +
+          +static bool8 TryLegendaryEncounter(void)
+          +{
+          +    u32 i, j;
+          +
+          +    for (i = 0; i < ARRAY_COUNT(sLegendaryAreas); i++)
+          +    {
+          +        if (gSaveBlock1Ptr->location.mapGroup != sLegendaryAreas[i].mapGroup
+          +         || gSaveBlock1Ptr->location.mapNum != sLegendaryAreas[i].mapNum)
+          +            continue;
+          +
+          +        for (j = 0; j < sLegendaryAreas[i].count; j++)
+          +        {
+          +            if (Random() % 100 < LEGENDARY_WILD_CHANCE)
+          +            {
+          +                if (!IsWildLevelAllowedByRepel(LEGENDARY_WILD_LEVEL))
+          +                    return FALSE;
+          +                CreateWildMon(sLegendaryAreas[i].species[j], LEGENDARY_WILD_LEVEL);
+          +                return TRUE;
+          +            }
+          +        }
+          +        break;
+          +    }
+          +    return FALSE;
+          +}
+          +
+           bool8 StandardWildEncounter(u16 curMetatileBehavior, u16 prevMetatileBehavior)
+           {
+               u32 headerId;
+          @@ -721,6 +793,12 @@ bool8 StandardWildEncounter(u16 curMetatileBehavior, u16 prevMetatileBehavior)
+                       else if (WildEncounterCheck(gWildMonHeaders[headerId].encounterTypes[timeOfDay].landMonsInfo->encounterRate, FALSE) != TRUE)
+                           return FALSE;
+           
+          +            if (TryLegendaryEncounter())
+          +            {
+          +                BattleSetup_StartWildBattle();
+          +                return TRUE;
+          +            }
+          +
+                       if (TryStartRoamerEncounter())
+                       {
+                           roamer = &gSaveBlock1Ptr->roamer[gEncounteredRoamerIndex];
+          EOF_PATCH
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git apply --verbose --ignore-whitespace lend.patch
+
+      - name: Compilar
+        run: make firered -j$(nproc)
+
+      - name: Guardar o jogo
+        uses: actions/upload-artifact@v4
+        with:
+          name: pokefirered-lendarios
+          path: "*.gba"
