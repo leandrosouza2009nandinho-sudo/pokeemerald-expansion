@@ -1,0 +1,117 @@
+name: Compilar Lendarios e HM Livre
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm
+    steps:
+      - name: Instalar ferramentas
+        run: |
+          apt-get update
+          apt-get install -y git build-essential libpng-dev python3 binutils-arm-none-eabi
+
+      - name: Baixar o projeto
+        uses: actions/checkout@v4
+
+      - name: Aplicar lendarios e HM livre
+        run: |
+          cat > lend.b64 <<'EOF_B64'
+          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
+          FCsGAAA=
+          EOF_B64
+          base64 -d lend.b64 | gunzip > lend.patch
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git apply --verbose lend.patch
+
+      - name: Compilar
+        run: make firered -j$(nproc)
+
+      - name: Guardar o jogo
+        uses: actions/upload-artifact@v4
+        with:
+          name: pokefirered-lendarios
+          path: "*.gba"
