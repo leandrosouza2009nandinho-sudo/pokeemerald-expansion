@@ -1,0 +1,349 @@
+name: Compilar Kaiser Emerald
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm
+    steps:
+      - name: Instalar ferramentas
+        run: |
+          apt-get update
+          apt-get install -y git build-essential libpng-dev python3 binutils-arm-none-eabi
+
+      - name: Baixar o projeto
+        uses: actions/checkout@v4
+
+      - name: Aplicar o Kaiser
+        run: |
+          cat > kaiser.patch <<'EOF_PATCH'
+          diff --git a/graphics/pokemon/groudon/kaiser.pal b/graphics/pokemon/groudon/kaiser.pal
+          new file mode 100644
+          index 00000000..d4d735a2
+          --- /dev/null
+          +++ b/graphics/pokemon/groudon/kaiser.pal
+          @@ -0,0 +1,19 @@
+          +JASC-PAL
+          +0100
+          +16
+          +152 208 160
+          +0 0 0
+          +40 40 48
+          +150 150 162
+          +72 72 84
+          +112 112 124
+          +48 48 56
+          +60 60 70
+          +40 150 255
+          +112 96 96
+          +248 248 248
+          +30 70 140
+          +184 184 208
+          +56 56 56
+          +144 128 136
+          +168 152 160
+          diff --git a/include/constants/abilities.h b/include/constants/abilities.h
+          index f54758ce..0120e933 100644
+          --- a/include/constants/abilities.h
+          +++ b/include/constants/abilities.h
+          @@ -341,6 +341,7 @@ enum __attribute__((packed)) Ability
+               ABILITY_317 = 317,
+               ABILITY_SPICY_SPRAY = 318,
+               ABILITY_AURA_GUARD = 319,
+          +    ABILITY_ATOMIC_NUCLEUS,
+               ABILITIES_COUNT_GEN9,
+               ABILITIES_COUNT = ABILITIES_COUNT_GEN9,
+           };
+          diff --git a/include/constants/moves.h b/include/constants/moves.h
+          index cca0f09f..9f2f1500 100644
+          --- a/include/constants/moves.h
+          +++ b/include/constants/moves.h
+          @@ -903,6 +903,8 @@ enum __attribute__((packed)) Move
+               MOVE_PSYCHIC_NOISE = 845,
+               MOVE_UPPER_HAND = 846,
+               MOVE_MALIGNANT_CHAIN = 847,
+          +    MOVE_ATOMIC_BREATH = 848,
+          +    MOVE_NUKE = 849,
+               MOVES_COUNT_GEN9,
+           
+               // Add any custom moves here, not further down!
+          diff --git a/include/constants/species.h b/include/constants/species.h
+          index bf5122e1..b35127d0 100644
+          --- a/include/constants/species.h
+          +++ b/include/constants/species.h
+          @@ -1692,6 +1692,7 @@ enum __attribute__((packed)) Species
+           
+               SPECIES_CUSTOM_START = SPECIES_GLIMMORA_MEGA,
+               // Add any custom species between here and SPECIES_CUSTOM_END
+          +    SPECIES_KAISER,
+               SPECIES_CUSTOM_END,
+           
+               SPECIES_EGG = SPECIES_CUSTOM_END,
+          diff --git a/src/battle_move_resolution.c b/src/battle_move_resolution.c
+          index bdf15a48..b61a7bfe 100644
+          --- a/src/battle_move_resolution.c
+          +++ b/src/battle_move_resolution.c
+          @@ -3376,6 +3376,8 @@ static enum MoveEndResult MoveEndAbsorb(struct BattleCalcValues *cv)
+                    && !IsAbilityAndRecord(cv->battlerAtk, cv->abilities[cv->battlerAtk], ABILITY_MAGIC_GUARD))
+                   {
+                       s32 recoil = (GetNonDynamaxMaxHP(cv->battlerAtk) + 1) / 2; // Half of Max HP Rounded UP
+          +            if (cv->move == MOVE_NUKE)
+          +                recoil = (GetNonDynamaxMaxHP(cv->battlerAtk) + 2) / 3; // Nuke: 1/3 do HP maximo
+                       SetPassiveDamageAmount(cv->battlerAtk, recoil);
+                       gSpecialStatuses[cv->battlerAtk].mindBlownRecoil = TRUE;
+                       TryUpdateEvolutionTracker(IF_RECOIL_DAMAGE_GE, gBattleStruct->passiveHpUpdate[cv->battlerAtk], MOVE_NONE);
+          diff --git a/src/battle_util.c b/src/battle_util.c
+          index b274c388..7d16a706 100644
+          --- a/src/battle_util.c
+          +++ b/src/battle_util.c
+          @@ -4549,6 +4549,7 @@ u32 AbilityBattleEffects(enum AbilityEffect caseID, enum BattlerId battler, enum
+                   case ABILITY_AS_ONE_SHADOW_RIDER:
+                   case ABILITY_BEAST_BOOST:
+                   case ABILITY_EELEVATE:
+          +        case ABILITY_ATOMIC_NUCLEUS:
+                       {
+                           if (NoAliveMonsForEitherParty())
+                               break;
+          @@ -4558,7 +4559,7 @@ u32 AbilityBattleEffects(enum AbilityEffect caseID, enum BattlerId battler, enum
+           
+                           if (ability == ABILITY_BEAST_BOOST || ability == ABILITY_EELEVATE)
+                               stat = GetHighestStatId(battler);
+          -                else if (ability == ABILITY_GRIM_NEIGH || ability == ABILITY_AS_ONE_SHADOW_RIDER)
+          +                else if (ability == ABILITY_GRIM_NEIGH || ability == ABILITY_AS_ONE_SHADOW_RIDER || ability == ABILITY_ATOMIC_NUCLEUS)
+                               stat = STAT_SPATK;
+           
+                           if (numMonsFainted && CompareStat(battler, stat, MAX_STAT_STAGE, CMP_LESS_THAN, ability))
+          diff --git a/src/data/abilities.h b/src/data/abilities.h
+          index 56b71858..769ad883 100644
+          --- a/src/data/abilities.h
+          +++ b/src/data/abilities.h
+          @@ -2539,6 +2539,13 @@ const struct AbilityInfo gAbilitiesInfo[ABILITIES_COUNT] =
+                   .description = COMPOUND_STRING("Ups Fire-type moves."),
+               },
+           
+          +    [ABILITY_ATOMIC_NUCLEUS] =
+          +    {
+          +        .name = _("Atomic Nucleus"),
+          +        .description = COMPOUND_STRING("Raises Sp. Atk after KOs."),
+          +        .aiRating = 7,
+          +    },
+          +
+               [ABILITY_317] =
+               {
+                   .name = _("-------"),
+          diff --git a/src/data/graphics/pokemon.h b/src/data/graphics/pokemon.h
+          index 9726fafa..df06ee8c 100644
+          --- a/src/data/graphics/pokemon.h
+          +++ b/src/data/graphics/pokemon.h
+          @@ -14084,6 +14084,8 @@ const u32 gObjectEventPic_Substitute[] = INCGFX_COMP("graphics/pokemon/question_
+           #endif //P_PRIMAL_REVERSIONS
+           #endif //P_FAMILY_KYOGRE
+           
+          +const u16 gMonPalette_Kaiser[] = INCGFX_U16("graphics/pokemon/groudon/kaiser.pal", ".gbapal");
+          +
+           #if P_FAMILY_GROUDON
+           #if !P_GBA_STYLE_SPECIES_GFX
+               const u32 gMonFrontPic_Groudon[] = INCGFX_U32("graphics/pokemon/groudon/anim_front.png", ".4bpp.smol");
+          diff --git a/src/data/moves_info.h b/src/data/moves_info.h
+          index d75670d7..3b5a6e89 100644
+          --- a/src/data/moves_info.h
+          +++ b/src/data/moves_info.h
+          @@ -22116,6 +22116,46 @@ const struct MoveInfo gMovesInfo[MOVES_COUNT_ALL] =
+                   .battleAnimScript = gBattleAnimMove_MalignantChain,
+               },
+           
+          +    [MOVE_ATOMIC_BREATH] =
+          +    {
+          +        .name = COMPOUND_STRING("Atomic Breath"),
+          +        .description = COMPOUND_STRING(
+          +            "A searing atomic blast.\n"
+          +            "May cause a burn."),
+          +        .effect = EFFECT_HIT,
+          +        .power = 100,
+          +        .type = TYPE_DRAGON,
+          +        .accuracy = 90,
+          +        .pp = 10,
+          +        .target = TARGET_SELECTED,
+          +        .priority = 0,
+          +        .category = DAMAGE_CATEGORY_SPECIAL,
+          +        .additionalEffects = ADDITIONAL_EFFECTS({
+          +            .moveEffect = MOVE_EFFECT_BURN,
+          +            .chance = 30,
+          +        }),
+          +        .battleAnimScript = gBattleAnimMove_DragonPulse,
+          +    },
+          +
+          +    [MOVE_NUKE] =
+          +    {
+          +        .name = COMPOUND_STRING("Nuke"),
+          +        .description = COMPOUND_STRING(
+          +            "A nuclear blast. The user\n"
+          +            "loses 1/3 of its max HP."),
+          +        .effect = EFFECT_MAX_HP_50_RECOIL,
+          +        .power = 150,
+          +        .type = TYPE_FIRE,
+          +        .accuracy = 100,
+          +        .pp = 8,
+          +        .target = TARGET_SELECTED,
+          +        .priority = 0,
+          +        .category = DAMAGE_CATEGORY_SPECIAL,
+          +        .metronomeBanned = TRUE,
+          +        .dampBanned = TRUE,
+          +        .battleAnimScript = gBattleAnimMove_Explosion,
+          +    },
+          +
+               // Z-Moves
+               [MOVE_BREAKNECK_BLITZ] =
+               {
+          diff --git a/src/data/pokemon/species_info/gen_3_families.h b/src/data/pokemon/species_info/gen_3_families.h
+          index b74e2f64..48fa86bf 100644
+          --- a/src/data/pokemon/species_info/gen_3_families.h
+          +++ b/src/data/pokemon/species_info/gen_3_families.h
+          @@ -12975,6 +12975,84 @@ const struct SpeciesInfo gSpeciesInfoGen3[] =
+                   .formChangeTable = sGroudonFormChangeTable,
+               },
+           
+          +    [SPECIES_KAISER] =
+          +    {
+          +        .baseHP        = 110,
+          +        .baseAttack    = 160,
+          +        .baseDefense   = 130,
+          +        .baseSpeed     = 90,
+          +        .baseSpAttack  = 140,
+          +        .baseSpDefense = 110,
+          +        .types = MON_TYPES(TYPE_DRAGON, TYPE_GROUND),
+          +        .catchRate = 3,
+          +    #if P_UPDATED_EXP_YIELDS >= GEN_8
+          +        .expYield = 335,
+          +    #elif P_UPDATED_EXP_YIELDS >= GEN_5
+          +        .expYield = 302,
+          +    #else
+          +        .expYield = 218,
+          +    #endif
+          +        .evYield_Attack = 3,
+          +        .genderRatio = MON_GENDERLESS,
+          +        .eggCycles = 120,
+          +        .friendship = 0,
+          +        .growthRate = GROWTH_SLOW,
+          +        .eggGroups = MON_EGG_GROUPS(EGG_GROUP_NO_EGGS_DISCOVERED),
+          +        .abilities = { ABILITY_ATOMIC_NUCLEUS, ABILITY_NONE, ABILITY_NONE },
+          +        .bodyColor = BODY_COLOR_GRAY,
+          +        .speciesName = _("Kaiser"),
+          +        .cryId = CRY_GROUDON,
+          +        .natDexNum = NATIONAL_DEX_GROUDON,
+          +        .categoryName = _("Atomic"),
+          +        .height = 35,
+          +        .weight = 9500,
+          +        .description = COMPOUND_STRING(
+          +            "A colossal titan that sleeps beneath the\n"
+          +            "earth. Every foe it defeats feeds the\n"
+          +            "atomic fire in its core, and its breath\n"
+          +            "grows ever more terrible."),
+          +        .pokemonScale = 256,
+          +        .pokemonOffset = 0,
+          +        .trainerScale = 515,
+          +        .trainerOffset = 14,
+          +        .frontPic = gMonFrontPic_Groudon,
+          +        .frontPicSize = MON_COORDS_SIZE(64, 64),
+          +        .frontPicYOffset = P_GBA_STYLE_SPECIES_GFX ? 1 : 0,
+          +        .frontAnimFrames = ANIM_FRAMES(
+          +            ANIMCMD_FRAME(0, 11),
+          +            ANIMCMD_FRAME(1, 10),
+          +            ANIMCMD_FRAME(0, 10),
+          +            ANIMCMD_FRAME(1, 20),
+          +            ANIMCMD_FRAME(0, 10),
+          +        ),
+          +        .frontAnimId = ANIM_V_SHAKE,
+          +        .backPic = gMonBackPic_Groudon,
+          +        .backPicSize = P_GBA_STYLE_SPECIES_GFX ? MON_COORDS_SIZE(64, 56) : MON_COORDS_SIZE(64, 48),
+          +        .backPicYOffset = P_GBA_STYLE_SPECIES_GFX ? 7 : 8,
+          +        .backAnimId = BACK_ANIM_SHAKE_GLOW_BLUE,
+          +        .palette = gMonPalette_Kaiser,
+          +        .shinyPalette = gMonPalette_Kaiser,
+          +        .iconSprite = gMonIcon_Groudon,
+          +        .iconPalIndex = 0,
+          +        .pokemonJumpType = PKMN_JUMP_TYPE_NONE,
+          +        SHADOW(2, 11, SHADOW_SIZE_XL_BATTLE_ONLY)
+          +        FOOTPRINT(Groudon)
+          +        OVERWORLD(
+          +            sPicTable_Groudon,
+          +            SIZE_64x64,
+          +            SHADOW_SIZE_M,
+          +            TRACKS_FOOT,
+          +            sAnimTable_Following,
+          +            gOverworldPalette_Groudon,
+          +            gShinyOverworldPalette_Groudon
+          +        )
+          +        .isRestrictedLegendary = TRUE,
+          +        .isFrontierBanned = TRUE,
+          +        .perfectIVCount = LEGENDARY_PERFECT_IV_COUNT,
+          +        .levelUpLearnset = sKaiserLevelUpLearnset,
+          +        .teachableLearnset = sGroudonTeachableLearnset,
+          +    },
+          +
+           #if P_PRIMAL_REVERSIONS
+               [SPECIES_GROUDON_PRIMAL] =
+               {
+          diff --git a/src/data/wild_encounters.json b/src/data/wild_encounters.json
+          index ac4c8a1f..f47c7a7c 100755
+          --- a/src/data/wild_encounters.json
+          +++ b/src/data/wild_encounters.json
+          @@ -7775,9 +7775,9 @@
+                           "species": "SPECIES_SOLROCK"
+                         },
+                         {
+          -                "min_level": 35,
+          -                "max_level": 35,
+          -                "species": "SPECIES_GOLBAT"
+          +                "min_level": 70,
+          +                "max_level": 70,
+          +                "species": "SPECIES_KAISER"
+                         },
+                         {
+                           "min_level": 39,
+          diff --git a/src/pokemon.c b/src/pokemon.c
+          index e6dbd661..bb47bcde 100644
+          --- a/src/pokemon.c
+          +++ b/src/pokemon.c
+          @@ -489,6 +489,22 @@ const struct NatureInfo gNaturesInfo[NUM_NATURES] =
+           #include "data/pokemon/wild_encounter_ow_behavior.h"
+           #include "data/object_events/object_event_pic_tables_followers.h"
+           
+          +// Lista de golpes do Kaiser (Hack)
+          +static const struct LevelUpMove sKaiserLevelUpLearnset[] = {
+          +    LEVEL_UP_MOVE( 1, MOVE_SCARY_FACE),
+          +    LEVEL_UP_MOVE( 1, MOVE_ANCIENT_POWER),
+          +    LEVEL_UP_MOVE( 1, MOVE_MUD_SHOT),
+          +    LEVEL_UP_MOVE( 1, MOVE_DRAGON_BREATH),
+          +    LEVEL_UP_MOVE( 9, MOVE_EARTH_POWER),
+          +    LEVEL_UP_MOVE(18, MOVE_BULK_UP),
+          +    LEVEL_UP_MOVE(30, MOVE_REST),
+          +    LEVEL_UP_MOVE(40, MOVE_EARTHQUAKE),
+          +    LEVEL_UP_MOVE(50, MOVE_DRAGON_CLAW),
+          +    LEVEL_UP_MOVE(60, MOVE_ATOMIC_BREATH),
+          +    LEVEL_UP_MOVE(70, MOVE_NUKE),
+          +    LEVEL_UP_END
+          +};
+          +
+           #include "data/pokemon/species_info.h"
+           
+           #define PP_UP_SHIFTS(val)           val,        (val) << 2,        (val) << 4,        (val) << 6
+          EOF_PATCH
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git apply --verbose --ignore-whitespace kaiser.patch
+
+      - name: Desligar desobediencia
+        run: |
+          sed -i 's#if (FlagGet(FLAG_BADGE08_GET)) // Rain Badge, ignore obedience altogether#if (TRUE || FlagGet(FLAG_BADGE08_GET))#' src/battle_util.c
+          grep -n "TRUE || FlagGet(FLAG_BADGE08_GET)" src/battle_util.c
+
+      - name: Compilar
+        run: make -j$(nproc)
+
+      - name: Guardar o jogo
+        uses: actions/upload-artifact@v4
+        with:
+          name: pokeemerald-kaiser
+          path: "*.gba"
