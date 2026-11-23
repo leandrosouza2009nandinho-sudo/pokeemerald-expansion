@@ -364,7 +364,10 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git apply --verbose --ignore-whitespace adapt.patch
 
-      - name: Compilar
+            - name: Desligar desobediencia
+        run: |
+          sed -i 's#if (FlagGet(FLAG_BADGE08_GET)) // Rain Badge, ignore obedience altogether#if (TRUE || FlagGet(FLAG_BADGE08_GET))#' src/battle_util.c
+          grep -n "TRUE || FlagGet(FLAG_BADGE08_GET)" src/battle_util.c
         run: make firered -j$(nproc)
 
       - name: Guardar o jogo
