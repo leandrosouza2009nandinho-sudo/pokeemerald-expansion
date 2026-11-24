@@ -1,0 +1,448 @@
+name: Compilar Genisis
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm
+    steps:
+      - name: Instalar ferramentas
+        run: |
+          apt-get update
+          apt-get install -y git build-essential libpng-dev python3 binutils-arm-none-eabi
+
+      - name: Baixar o projeto
+        uses: actions/checkout@v4
+
+      - name: Aplicar o Genisis
+        run: |
+          cat > genisis.patch <<'EOF_PATCH'
+          diff --git a/graphics/pokemon/tyranitar/genisis.pal b/graphics/pokemon/tyranitar/genisis.pal
+          new file mode 100644
+          index 00000000..d74a29a0
+          --- /dev/null
+          +++ b/graphics/pokemon/tyranitar/genisis.pal
+          @@ -0,0 +1,19 @@
+          +JASC-PAL
+          +0100
+          +16
+          +248 160 176
+          +16 8 8
+          +70 70 78
+          +16 16 16
+          +200 40 40
+          +36 36 42
+          +248 248 248
+          +192 192 192
+          +112 112 112
+          +110 0 0
+          +230 20 20
+          +150 20 30
+          +90 8 16
+          +220 70 70
+          +0 0 0
+          +0 0 0
+          diff --git a/include/battle.h b/include/battle.h
+          index a4ded31b..0ce99d4b 100644
+          --- a/include/battle.h
+          +++ b/include/battle.h
+          @@ -1069,6 +1069,8 @@ extern u16 gIntroSlideFlags;
+           extern u8 gSentPokesToOpponent[2];
+           extern struct BattleEnigmaBerry gEnigmaBerries[MAX_BATTLERS_COUNT];
+           extern struct BattleScripting gBattleScripting;
+          +extern u8 gGenisisTurns[MAX_BATTLERS_COUNT];
+          +extern u8 gSuperNovaUsed[MAX_BATTLERS_COUNT];
+           extern struct BattleStruct *gBattleStruct;
+           extern struct StartingStatuses gStartingStatuses;
+           extern struct AiBattleData *gAiBattleData;
+          diff --git a/include/constants/abilities.h b/include/constants/abilities.h
+          index f54758ce..a022ca2e 100644
+          --- a/include/constants/abilities.h
+          +++ b/include/constants/abilities.h
+          @@ -341,6 +341,7 @@ enum __attribute__((packed)) Ability
+               ABILITY_317 = 317,
+               ABILITY_SPICY_SPRAY = 318,
+               ABILITY_AURA_GUARD = 319,
+          +    ABILITY_INICIO,
+               ABILITIES_COUNT_GEN9,
+               ABILITIES_COUNT = ABILITIES_COUNT_GEN9,
+           };
+          diff --git a/include/constants/moves.h b/include/constants/moves.h
+          index cca0f09f..98bf4305 100644
+          --- a/include/constants/moves.h
+          +++ b/include/constants/moves.h
+          @@ -903,6 +903,10 @@ enum __attribute__((packed)) Move
+               MOVE_PSYCHIC_NOISE = 845,
+               MOVE_UPPER_HAND = 846,
+               MOVE_MALIGNANT_CHAIN = 847,
+          +    MOVE_DRAGON_METEORO = 848,
+          +    MOVE_SUPER_NOVA = 849,
+          +    MOVE_ROAR_ATOMIC = 850,
+          +    MOVE_IMPACTO_GALATICO = 851,
+               MOVES_COUNT_GEN9,
+           
+               // Add any custom moves here, not further down!
+          diff --git a/include/constants/species.h b/include/constants/species.h
+          index bf5122e1..c24116af 100644
+          --- a/include/constants/species.h
+          +++ b/include/constants/species.h
+          @@ -1692,6 +1692,7 @@ enum __attribute__((packed)) Species
+           
+               SPECIES_CUSTOM_START = SPECIES_GLIMMORA_MEGA,
+               // Add any custom species between here and SPECIES_CUSTOM_END
+          +    SPECIES_GENISIS,
+               SPECIES_CUSTOM_END,
+           
+               SPECIES_EGG = SPECIES_CUSTOM_END,
+          diff --git a/src/battle_main.c b/src/battle_main.c
+          index 1139f1f7..53ff4b79 100644
+          --- a/src/battle_main.c
+          +++ b/src/battle_main.c
+          @@ -2752,6 +2752,9 @@ static void ClearSetBScriptingStruct(void)
+               gBattleScripting.specialTrainerBattleType = specialBattleType;
+           }
+           
+          +EWRAM_DATA u8 gGenisisTurns[MAX_BATTLERS_COUNT] = {0};
+          +EWRAM_DATA u8 gSuperNovaUsed[MAX_BATTLERS_COUNT] = {0};
+          +
+           static void BattleStartClearSetData(void)
+           {
+               s32 i;
+          @@ -2763,6 +2766,8 @@ static void BattleStartClearSetData(void)
+               memset(&gSideStatuses, 0, sizeof(gSideStatuses));
+               memset(&gSideTimers, 0, sizeof(gSideTimers));
+               memset(&gBattleResults, 0, sizeof(gBattleResults));
+          +    memset(gGenisisTurns, 0, sizeof(gGenisisTurns));
+          +    memset(gSuperNovaUsed, 0, sizeof(gSuperNovaUsed));
+               ClearSetBScriptingStruct();
+           
+               for (i = 0; i < MAX_BATTLERS_COUNT; i++)
+          @@ -2956,6 +2961,7 @@ void SwitchInClearSetData(enum BattlerId battler, struct Volatiles *volatilesCopy)
+           
+               // Data cleared both on switch and faint
+               ClearSetDataOnLeave(battler);
+          +    gGenisisTurns[battler] = 0;
+           
+               ClearIllusionMon(battler);
+               if (effect != EFFECT_BATON_PASS)
+          diff --git a/src/battle_move_resolution.c b/src/battle_move_resolution.c
+          index bdf15a48..ab8f9f67 100644
+          --- a/src/battle_move_resolution.c
+          +++ b/src/battle_move_resolution.c
+          @@ -3765,6 +3765,9 @@ static enum MoveEndResult MoveEndFaintBlock(struct BattleCalcValues *cv)
+           
+           static enum MoveEndResult MoveEndUpdateLastMoves(struct BattleCalcValues *cv)
+           {
+          +    if (cv->move == MOVE_SUPER_NOVA)
+          +        gSuperNovaUsed[cv->battlerAtk] = TRUE;
+          +
+               if (!IsOnPlayerSide(cv->battlerAtk))
+                   UpdateStallMons(cv);
+           
+          diff --git a/src/battle_util.c b/src/battle_util.c
+          index b274c388..b797a9c3 100644
+          --- a/src/battle_util.c
+          +++ b/src/battle_util.c
+          @@ -1629,6 +1629,9 @@ u32 CheckMoveLimitations(enum BattlerId battler, u8 unusableMoves, u32 check)
+                   // No move
+                   if (check & MOVE_LIMITATION_ZEROMOVE && move == MOVE_NONE)
+                       unusableMoves |= 1u << i;
+          +        // Super Nova: uma vez por batalha
+          +        else if (move == MOVE_SUPER_NOVA && gSuperNovaUsed[battler])
+          +            unusableMoves |= 1u << i;
+                   // No PP
+                   else if (check & MOVE_LIMITATION_PP && gBattleMons[battler].pp[i] == 0)
+                       unusableMoves |= 1u << i;
+          @@ -3693,6 +3696,21 @@ u32 AbilityBattleEffects(enum AbilityEffect caseID, enum BattlerId battler, enum
+                               effect++;
+                           }
+                           break;
+          +            case ABILITY_INICIO:
+          +                if (gGenisisTurns[battler] < 5)
+          +                    gGenisisTurns[battler]++;
+          +                if (gGenisisTurns[battler] == 4)
+          +                {
+          +                    gEffectBattler = gBattlerAbility = battler;
+          +                    SetStatChange(battler, STAT_ATK, 2);
+          +                    SetStatChange(battler, STAT_DEF, 2);
+          +                    SetStatChange(battler, STAT_SPATK, 2);
+          +                    SetStatChange(battler, STAT_SPDEF, 2);
+          +                    SetStatChange(battler, STAT_SPEED, 2);
+          +                    BattleScriptCall(BattleScript_AbilityStatChange);
+          +                    effect++;
+          +                }
+          +                break;
+                       case ABILITY_SPEED_BOOST:
+                           if (CompareStat(battler, STAT_SPEED, MAX_STAT_STAGE, CMP_LESS_THAN, gLastUsedAbility) && !BattlerJustSwitchedIn(battler))
+                           {
+          diff --git a/src/data/abilities.h b/src/data/abilities.h
+          index 56b71858..81eac153 100644
+          --- a/src/data/abilities.h
+          +++ b/src/data/abilities.h
+          @@ -2539,6 +2539,13 @@ const struct AbilityInfo gAbilitiesInfo[ABILITIES_COUNT] =
+                   .description = COMPOUND_STRING("Ups Fire-type moves."),
+               },
+           
+          +    [ABILITY_INICIO] =
+          +    {
+          +        .name = _("Início"),
+          +        .description = COMPOUND_STRING("After 4 turns, all stats +2."),
+          +        .aiRating = 9,
+          +    },
+          +
+               [ABILITY_317] =
+               {
+                   .name = _("-------"),
+          diff --git a/src/data/graphics/pokemon.h b/src/data/graphics/pokemon.h
+          index 9726fafa..9d43b74d 100644
+          --- a/src/data/graphics/pokemon.h
+          +++ b/src/data/graphics/pokemon.h
+          @@ -14084,6 +14084,8 @@ const u32 gObjectEventPic_Substitute[] = INCGFX_COMP("graphics/pokemon/question_
+           #endif //P_PRIMAL_REVERSIONS
+           #endif //P_FAMILY_KYOGRE
+           
+          +const u16 gMonPalette_Genisis[] = INCGFX_U16("graphics/pokemon/tyranitar/genisis.pal", ".gbapal");
+          +
+           #if P_FAMILY_GROUDON
+           #if !P_GBA_STYLE_SPECIES_GFX
+               const u32 gMonFrontPic_Groudon[] = INCGFX_U32("graphics/pokemon/groudon/anim_front.png", ".4bpp.smol");
+          diff --git a/src/data/moves_info.h b/src/data/moves_info.h
+          index d75670d7..b0972e54 100644
+          --- a/src/data/moves_info.h
+          +++ b/src/data/moves_info.h
+          @@ -22116,6 +22116,88 @@ const struct MoveInfo gMovesInfo[MOVES_COUNT_ALL] =
+                   .battleAnimScript = gBattleAnimMove_MalignantChain,
+               },
+           
+          +    [MOVE_DRAGON_METEORO] =
+          +    {
+          +        .name = COMPOUND_STRING("Dragon Meteoro"),
+          +        .description = COMPOUND_STRING(
+          +            "Summons meteors. Harshly\n"
+          +            "lowers the user's Sp. Atk."),
+          +        .effect = EFFECT_HIT,
+          +        .power = 130,
+          +        .type = TYPE_DRAGON,
+          +        .accuracy = 90,
+          +        .pp = 5,
+          +        .target = TARGET_SELECTED,
+          +        .priority = 0,
+          +        .category = DAMAGE_CATEGORY_SPECIAL,
+          +        .additionalEffects = ADDITIONAL_EFFECTS({
+          +            .moveEffect = MOVE_EFFECT_STAT_MINUS,
+          +            .spAtk = 2,
+          +            .self = TRUE,
+          +        }),
+          +        .battleAnimScript = gBattleAnimMove_DracoMeteor,
+          +    },
+          +
+          +    [MOVE_SUPER_NOVA] =
+          +    {
+          +        .name = COMPOUND_STRING("Super Nova"),
+          +        .description = COMPOUND_STRING(
+          +            "Causes fainting. Only once\n"
+          +            "per battle."),
+          +        .effect = EFFECT_OHKO,
+          +        .power = 1,
+          +        .type = TYPE_DRAGON,
+          +        .accuracy = 100,
+          +        .pp = 1,
+          +        .target = TARGET_SELECTED,
+          +        .priority = 0,
+          +        .category = DAMAGE_CATEGORY_SPECIAL,
+          +        .metronomeBanned = TRUE,
+          +        .copycatBanned = TRUE,
+          +        .assistBanned = TRUE,
+          +        .battleAnimScript = gBattleAnimMove_DragonBreath,
+          +    },
+          +
+          +    [MOVE_ROAR_ATOMIC] =
+          +    {
+          +        .name = COMPOUND_STRING("Roar Atomic"),
+          +        .description = COMPOUND_STRING(
+          +            "An atomic roar that always\n"
+          +            "paralyzes the target."),
+          +        .effect = EFFECT_HIT,
+          +        .power = 50,
+          +        .type = TYPE_FIRE,
+          +        .accuracy = 100,
+          +        .pp = 15,
+          +        .target = TARGET_SELECTED,
+          +        .priority = 0,
+          +        .category = DAMAGE_CATEGORY_SPECIAL,
+          +        .soundMove = TRUE,
+          +        .additionalEffects = ADDITIONAL_EFFECTS({
+          +            .moveEffect = MOVE_EFFECT_PARALYSIS,
+          +            .chance = 100,
+          +        }),
+          +        .battleAnimScript = gBattleAnimMove_HyperVoice,
+          +    },
+          +
+          +    [MOVE_IMPACTO_GALATICO] =
+          +    {
+          +        .name = COMPOUND_STRING("Impacto Galático"),
+          +        .description = COMPOUND_STRING(
+          +            "A galactic body slam that\n"
+          +            "may miss."),
+          +        .effect = EFFECT_HIT,
+          +        .power = 100,
+          +        .type = TYPE_ROCK,
+          +        .accuracy = 80,
+          +        .pp = 10,
+          +        .target = TARGET_SELECTED,
+          +        .priority = 0,
+          +        .category = DAMAGE_CATEGORY_PHYSICAL,
+          +        .makesContact = TRUE,
+          +        .battleAnimScript = gBattleAnimMove_MeteorMash,
+          +    },
+          +
+               // Z-Moves
+               [MOVE_BREAKNECK_BLITZ] =
+               {
+          diff --git a/src/data/pokemon/species_info/gen_2_families.h b/src/data/pokemon/species_info/gen_2_families.h
+          index 493aa3fe..5ef8a2fc 100644
+          --- a/src/data/pokemon/species_info/gen_2_families.h
+          +++ b/src/data/pokemon/species_info/gen_2_families.h
+          @@ -8455,6 +8455,80 @@ const struct SpeciesInfo gSpeciesInfoGen2[] =
+                   .formChangeTable = sTyranitarFormChangeTable,
+               },
+           
+          +    [SPECIES_GENISIS] =
+          +    {
+          +        .baseHP        = 105,
+          +        .baseAttack    = 140,
+          +        .baseDefense   = 110,
+          +        .baseSpeed     = 80,
+          +        .baseSpAttack  = 130,
+          +        .baseSpDefense = 105,
+          +        .types = MON_TYPES(TYPE_DRAGON, TYPE_DARK),
+          +        .catchRate = 3,
+          +    #if P_UPDATED_EXP_YIELDS >= GEN_8
+          +        .expYield = 300,
+          +    #elif P_UPDATED_EXP_YIELDS >= GEN_5
+          +        .expYield = 270,
+          +    #else
+          +        .expYield = 218,
+          +    #endif
+          +        .evYield_Attack = 3,
+          +        .genderRatio = PERCENT_FEMALE(50),
+          +        .eggCycles = 40,
+          +        .friendship = 35,
+          +        .growthRate = GROWTH_SLOW,
+          +        .eggGroups = MON_EGG_GROUPS(EGG_GROUP_MONSTER),
+          +        .abilities = { ABILITY_INICIO, ABILITY_INICIO, ABILITY_INICIO },
+          +        .bodyColor = BODY_COLOR_BLACK,
+          +        .speciesName = _("Genisis"),
+          +        .cryId = CRY_TYRANITAR,
+          +        .natDexNum = NATIONAL_DEX_TYRANITAR,
+          +        .categoryName = _("Origin"),
+          +        .height = 20,
+          +        .weight = 2020,
+          +        .description = COMPOUND_STRING(
+          +            "Born at the dawn of everything, Genisis\n"
+          +            "grows stronger the longer it fights.\n"
+          +            "After a few turns its power explodes\n"
+          +            "like a newborn star."),
+          +        .pokemonScale = 256,
+          +        .pokemonOffset = 0,
+          +        .trainerScale = 345,
+          +        .trainerOffset = 7,
+          +        .frontPic = gMonFrontPic_Tyranitar,
+          +        .frontPicSize = MON_COORDS_SIZE(64, 64),
+          +        .frontPicYOffset = 0,
+          +        .frontAnimFrames = ANIM_FRAMES(
+          +            ANIMCMD_FRAME(1, 50),
+          +            ANIMCMD_FRAME(1, 30),
+          +            ANIMCMD_FRAME(0, 10),
+          +        ),
+          +        .frontAnimId = P_GBA_STYLE_SPECIES_GFX ? ANIM_H_SHAKE : ANIM_V_SHAKE,
+          +        .frontAnimDelay = 10,
+          +        .backPic = gMonBackPic_Tyranitar,
+          +        .backPicSize = MON_COORDS_SIZE(64, 64),
+          +        .backPicYOffset = P_GBA_STYLE_SPECIES_GFX ? 0 : 1,
+          +        .backAnimId = BACK_ANIM_V_SHAKE_LOW,
+          +        .palette = gMonPalette_Genisis,
+          +        .shinyPalette = gMonPalette_Genisis,
+          +        .iconSprite = gMonIcon_Tyranitar,
+          +        .iconPalIndex = P_GBA_STYLE_SPECIES_ICONS ? 1 : 4,
+          +        .pokemonJumpType = PKMN_JUMP_TYPE_NONE,
+          +        SHADOW(-1, 11, SHADOW_SIZE_L)
+          +        FOOTPRINT(Tyranitar)
+          +        OVERWORLD(
+          +            sPicTable_Tyranitar,
+          +            SIZE_32x32,
+          +            SHADOW_SIZE_M,
+          +            TRACKS_FOOT,
+          +            sAnimTable_Following,
+          +            gOverworldPalette_Tyranitar,
+          +            gShinyOverworldPalette_Tyranitar
+          +        )
+          +        .levelUpLearnset = sGenisisLevelUpLearnset,
+          +        .teachableLearnset = sTyranitarTeachableLearnset,
+          +    },
+          +
+           #if P_MEGA_EVOLUTIONS
+               [SPECIES_TYRANITAR_MEGA] =
+               {
+          diff --git a/src/data/wild_encounters.json b/src/data/wild_encounters.json
+          index ac4c8a1f..0216b8b0 100755
+          --- a/src/data/wild_encounters.json
+          +++ b/src/data/wild_encounters.json
+          @@ -7775,9 +7775,9 @@
+                           "species": "SPECIES_SOLROCK"
+                         },
+                         {
+          -                "min_level": 35,
+          -                "max_level": 35,
+          -                "species": "SPECIES_GOLBAT"
+          +                "min_level": 70,
+          +                "max_level": 70,
+          +                "species": "SPECIES_GENISIS"
+                         },
+                         {
+                           "min_level": 39,
+          diff --git a/src/pokemon.c b/src/pokemon.c
+          index e6dbd661..451f7968 100644
+          --- a/src/pokemon.c
+          +++ b/src/pokemon.c
+          @@ -489,6 +489,21 @@ const struct NatureInfo gNaturesInfo[NUM_NATURES] =
+           #include "data/pokemon/wild_encounter_ow_behavior.h"
+           #include "data/object_events/object_event_pic_tables_followers.h"
+           
+          +// Lista de golpes do Genisis (Hack)
+          +static const struct LevelUpMove sGenisisLevelUpLearnset[] = {
+          +    LEVEL_UP_MOVE( 1, MOVE_BITE),
+          +    LEVEL_UP_MOVE( 1, MOVE_SCARY_FACE),
+          +    LEVEL_UP_MOVE(20, MOVE_ROCK_SLIDE),
+          +    LEVEL_UP_MOVE(30, MOVE_CRUNCH),
+          +    LEVEL_UP_MOVE(40, MOVE_DRAGON_DANCE),
+          +    LEVEL_UP_MOVE(50, MOVE_EARTHQUAKE),
+          +    LEVEL_UP_MOVE(55, MOVE_DRAGON_METEORO),
+          +    LEVEL_UP_MOVE(60, MOVE_ROAR_ATOMIC),
+          +    LEVEL_UP_MOVE(65, MOVE_IMPACTO_GALATICO),
+          +    LEVEL_UP_MOVE(70, MOVE_SUPER_NOVA),
+          +    LEVEL_UP_END
+          +};
+          +
+           #include "data/pokemon/species_info.h"
+           
+           #define PP_UP_SHIFTS(val)           val,        (val) << 2,        (val) << 4,        (val) << 6
+          EOF_PATCH
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git apply --verbose --ignore-whitespace genisis.patch
+
+      - name: Desligar desobediencia
+        run: |
+          sed -i 's#if (FlagGet(FLAG_BADGE08_GET)) // Rain Badge, ignore obedience altogether#if (TRUE || FlagGet(FLAG_BADGE08_GET))#' src/battle_util.c
+          grep -n "TRUE || FlagGet(FLAG_BADGE08_GET)" src/battle_util.c
+
+      - name: Compilar
+        run: make -j$(nproc)
+
+      - name: Guardar o jogo
+        uses: actions/upload-artifact@v4
+        with:
+          name: pokeemerald-genisis
+          path: "*.gba"
